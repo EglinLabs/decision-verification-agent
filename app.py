@@ -11,16 +11,17 @@ from pydantic import BaseModel, Field, AnyHttpUrl
 
 APP_NAME = "Decision + Verification Agent"
 
-# ✅ Always load .env from the same folder as this file (works regardless of where uvicorn is launched)
+# Always load .env from the same folder as this file
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
 
-# --- Security (read at import; you rarely change this)
+# Security
 API_KEY = os.getenv("API_KEY", "")
 
-# --- Runtime controls
+# Runtime controls
 DEFAULT_TIMEOUT_S = float(os.getenv("HTTP_TIMEOUT_S", "12"))
 MAX_CHECKS = int(os.getenv("MAX_CHECKS", "10"))
+ACP_MAX_CHECKS = int(os.getenv("ACP_MAX_CHECKS", "3"))
 DECISION_TTL_S = int(os.getenv("DECISION_TTL_S", "300"))
 MAX_LLM_TOKENS = int(os.getenv("MAX_LLM_TOKENS", "260"))
 
@@ -61,7 +62,7 @@ class DecideResponse(BaseModel):
 # Auth
 # ----------------------
 def require_api_key(x_api_key: Optional[str]):
-    # For local dev you *can* leave API_KEY empty. For production, set it.
+    # For local dev you can leave API_KEY empty. For production, set it.
     if not API_KEY:
         return
     if not x_api_key or x_api_key != API_KEY:
@@ -103,7 +104,6 @@ async def run_http_check(client: httpx.AsyncClient, check: VerifyHTTPCheck) -> D
 
     latency_ms = int((time.time() - t0) * 1000)
 
-    # classify transient failures (useful for verdict=wait)
     transient = False
     if error:
         transient = True
@@ -128,7 +128,7 @@ async def run_http_check(client: httpx.AsyncClient, check: VerifyHTTPCheck) -> D
 
 
 # ----------------------
-# OpenRouter: decision compression (read env at call time; no caching)
+# OpenRouter: decision compression
 # ----------------------
 async def llm_decide_openrouter(payload: Dict[str, Any]) -> Dict[str, Any]:
     openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "")
@@ -136,7 +136,7 @@ async def llm_decide_openrouter(payload: Dict[str, Any]) -> Dict[str, Any]:
     openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
     if not openrouter_api_key:
-        raise RuntimeError("OPENROUTER_API_KEY not set (check .env location/format)")
+        raise RuntimeError("OPENROUTER_API_KEY not set")
 
     system = (
         "You are a Decision+Verification agent for OTHER agents.\n"
@@ -175,7 +175,6 @@ async def llm_decide_openrouter(payload: Dict[str, Any]) -> Dict[str, Any]:
         ],
         "temperature": 0.1,
         "max_tokens": MAX_LLM_TOKENS,
-        # NOTE: Do not send response_format here to maximize compatibility on OpenRouter.
     }
 
     async with httpx.AsyncClient(verify=certifi.where()) as client:
@@ -193,7 +192,6 @@ async def llm_decide_openrouter(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     content = data["choices"][0]["message"]["content"].strip()
 
-    # Robust JSON extraction: parse directly, otherwise extract first {...} block
     try:
         return json.loads(content)
     except json.JSONDecodeError:
@@ -205,43 +203,16 @@ async def llm_decide_openrouter(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ----------------------
-# API
+# Shared decision logic
 # ----------------------
-@app.get("/health")
-async def health():
-    return {"ok": True, "name": APP_NAME}
-
-
-@app.get("/debug/env")
-async def debug_env(x_api_key: Optional[str] = Header(default=None)):
-    """
-    Temporary debugging endpoint.
-    Delete before deploying publicly, or protect with API_KEY.
-    """
-    require_api_key(x_api_key)
-
-    # Show only booleans / non-sensitive info
-    return {
-        "cwd": os.getcwd(),
-        "base_dir": BASE_DIR,
-        "env_file_exists": os.path.exists(os.path.join(BASE_DIR, ".env")),
-        "openrouter_key_present": bool(os.getenv("OPENROUTER_API_KEY", "")),
-        "openrouter_model": os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
-        "openrouter_base_url": os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-    }
-
-
-@app.post("/v1/decide", response_model=DecideResponse)
-async def decide(req: DecideRequest, x_api_key: Optional[str] = Header(default=None)):
-    require_api_key(x_api_key)
-
-    if len(req.checks) > MAX_CHECKS:
-        raise HTTPException(status_code=400, detail=f"Too many checks (max {MAX_CHECKS})")
+async def process_decision(req: DecideRequest, max_checks_allowed: int) -> DecideResponse:
+    if len(req.checks) > max_checks_allowed:
+        raise HTTPException(status_code=400, detail=f"Too many checks (max {max_checks_allowed})")
 
     evidence: List[Dict[str, Any]] = []
     failure_modes: List[str] = []
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=certifi.where()) as client:
         for c in req.checks:
             evidence.append(await run_http_check(client, c))
 
@@ -252,8 +223,6 @@ async def decide(req: DecideRequest, x_api_key: Optional[str] = Header(default=N
     if any_failed:
         failure_modes.append("one_or_more_checks_failed")
 
-    # Cheap guardrail:
-    # If partial not allowed and there is any hard failure -> block without spending LLM tokens.
     if (not req.allow_decide_on_partial) and any_hard_fail:
         return DecideResponse(
             verdict="block",
@@ -269,7 +238,6 @@ async def decide(req: DecideRequest, x_api_key: Optional[str] = Header(default=N
             failure_modes=failure_modes + ["hard_failure"],
         )
 
-    # If only transient failures and partial not allowed -> wait (still no LLM spend)
     if (not req.allow_decide_on_partial) and any_transient_fail and (not any_hard_fail):
         return DecideResponse(
             verdict="wait",
@@ -285,7 +253,6 @@ async def decide(req: DecideRequest, x_api_key: Optional[str] = Header(default=N
             failure_modes=failure_modes + ["transient_failure"],
         )
 
-    # Otherwise: compress with LLM into structured decision
     try:
         out = await llm_decide_openrouter(
             {
@@ -298,7 +265,6 @@ async def decide(req: DecideRequest, x_api_key: Optional[str] = Header(default=N
             }
         )
     except Exception as e:
-        # Fail-safe: block on LLM error
         return DecideResponse(
             verdict="block",
             confidence=0.85,
@@ -322,3 +288,24 @@ async def decide(req: DecideRequest, x_api_key: Optional[str] = Header(default=N
         evidence=evidence,
         failure_modes=out.get("failure_modes", []) + failure_modes,
     )
+
+
+# ----------------------
+# API
+# ----------------------
+@app.get("/health")
+async def health():
+    return {"ok": True, "name": APP_NAME}
+
+
+@app.post("/v1/decide", response_model=DecideResponse)
+async def decide(req: DecideRequest, x_api_key: Optional[str] = Header(default=None)):
+    require_api_key(x_api_key)
+    return await process_decision(req, MAX_CHECKS)
+
+
+@app.post("/v1/acp/decide", response_model=DecideResponse)
+async def acp_decide(req: DecideRequest):
+    # Public ACP-facing endpoint.
+    # Keep this lightweight and more restricted than the private endpoint.
+    return await process_decision(req, ACP_MAX_CHECKS)
