@@ -531,3 +531,39 @@ async def decide(req: DecideRequest, x_api_key: Optional[str] = Header(default=N
 async def acp_decide(req: DecideRequest):
     # Public ACP-facing endpoint
     return await process_decision(req, ACP_MAX_CHECKS)
+
+@app.get("/v1/capabilities")
+async def capabilities():
+    return {
+        "name": APP_NAME,
+        "description": "Verify external conditions before an AI agent executes actions.",
+        "checks_supported": [
+            "http",
+            "rpc",
+            "price",
+            "tx"
+        ],
+        "max_checks_per_request": ACP_MAX_CHECKS,
+        "decision_types": [
+            "proceed",
+            "wait",
+            "block"
+        ],
+        "example_request": {
+            "goal": "Verify Base RPC is alive",
+            "checks": [
+                {
+                    "type": "rpc",
+                    "rpc_url": "https://mainnet.base.org",
+                    "method_name": "eth_blockNumber",
+                    "params": [],
+                    "expect_hex_result": True
+                }
+            ],
+            "allow_decide_on_partial": True
+        },
+        "endpoints": {
+            "decision": "/v1/acp/decide",
+            "health": "/health"
+        }
+    }
