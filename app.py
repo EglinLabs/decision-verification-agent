@@ -2,7 +2,7 @@ import os
 import time
 import certifi
 import json
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal, Union, Annotated
 
 import httpx
 from dotenv import load_dotenv
@@ -40,10 +40,41 @@ class VerifyHTTPCheck(BaseModel):
     headers: Dict[str, str] = Field(default_factory=dict)
 
 
+class VerifyRPCCheck(BaseModel):
+    type: Literal["rpc"] = "rpc"
+    rpc_url: AnyHttpUrl
+    method_name: str
+    params: List[Any] = Field(default_factory=list)
+    expect_hex_result: bool = False
+    min_block_number: Optional[int] = None
+
+
+class VerifyPriceCheck(BaseModel):
+    type: Literal["price"] = "price"
+    source: Literal["coingecko"] = "coingecko"
+    asset_id: str
+    quote: str = "usd"
+    min_price: Optional[float] = None
+    max_price: Optional[float] = None
+
+
+class VerifyTxCheck(BaseModel):
+    type: Literal["tx"] = "tx"
+    rpc_url: AnyHttpUrl
+    tx_hash: str
+    require_success: bool = True
+
+
+CheckType = Annotated[
+    Union[VerifyHTTPCheck, VerifyRPCCheck, VerifyPriceCheck, VerifyTxCheck],
+    Field(discriminator="type"),
+]
+
+
 class DecideRequest(BaseModel):
     goal: str = Field(..., description="What decision is needed and why")
     constraints: Dict[str, Any] = Field(default_factory=dict)
-    checks: List[VerifyHTTPCheck] = Field(default_factory=list)
+    checks: List[CheckType] = Field(default_factory=list)
     allow_decide_on_partial: bool = False
     context: Dict[str, Any] = Field(default_factory=dict)
 
@@ -62,7 +93,6 @@ class DecideResponse(BaseModel):
 # Auth
 # ----------------------
 def require_api_key(x_api_key: Optional[str]):
-    # For local dev you can leave API_KEY empty. For production, set it.
     if not API_KEY:
         return
     if not x_api_key or x_api_key != API_KEY:
@@ -70,8 +100,12 @@ def require_api_key(x_api_key: Optional[str]):
 
 
 # ----------------------
-# Verification: HTTP checks
+# Verification helpers
 # ----------------------
+def _is_hex_string(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith("0x")
+
+
 async def run_http_check(client: httpx.AsyncClient, check: VerifyHTTPCheck) -> Dict[str, Any]:
     t0 = time.time()
     ok = False
@@ -94,10 +128,10 @@ async def run_http_check(client: httpx.AsyncClient, check: VerifyHTTPCheck) -> D
             if check.must_contain:
                 ok = (status == check.expect_status) and (check.must_contain in text)
             else:
-                ok = (status == check.expect_status)
+                ok = status == check.expect_status
             body_snippet = text[:300] if text else None
         else:
-            ok = (status == check.expect_status)
+            ok = status == check.expect_status
 
     except Exception as e:
         error = str(e)
@@ -127,6 +161,194 @@ async def run_http_check(client: httpx.AsyncClient, check: VerifyHTTPCheck) -> D
     }
 
 
+async def run_rpc_check(client: httpx.AsyncClient, check: VerifyRPCCheck) -> Dict[str, Any]:
+    t0 = time.time()
+    ok = False
+    error = None
+    result = None
+    status_code = None
+
+    try:
+        resp = await client.post(
+            str(check.rpc_url),
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": check.method_name,
+                "params": check.params,
+            },
+            timeout=DEFAULT_TIMEOUT_S,
+        )
+        status_code = resp.status_code
+        resp.raise_for_status()
+        payload = resp.json()
+
+        if "error" in payload:
+            error = json.dumps(payload["error"])[:300]
+        else:
+            result = payload.get("result")
+
+            if check.expect_hex_result and not _is_hex_string(result):
+                error = "Expected hex result but got non-hex result"
+            elif check.min_block_number is not None:
+                if not _is_hex_string(result):
+                    error = "Expected hex block number result"
+                else:
+                    block_number = int(result, 16)
+                    ok = block_number >= check.min_block_number
+            else:
+                ok = result is not None
+
+    except Exception as e:
+        error = str(e)
+
+    latency_ms = int((time.time() - t0) * 1000)
+    transient = bool(error)
+
+    return {
+        "type": "rpc",
+        "rpc_url": str(check.rpc_url),
+        "method_name": check.method_name,
+        "params": check.params,
+        "expect_hex_result": check.expect_hex_result,
+        "min_block_number": check.min_block_number,
+        "status": status_code,
+        "latency_ms": latency_ms,
+        "ok": ok,
+        "transient": transient,
+        "error": error,
+        "result": result,
+    }
+
+
+async def run_price_check(client: httpx.AsyncClient, check: VerifyPriceCheck) -> Dict[str, Any]:
+    t0 = time.time()
+    ok = False
+    error = None
+    price = None
+    status_code = None
+
+    try:
+        if check.source != "coingecko":
+            raise ValueError(f"Unsupported price source: {check.source}")
+
+        resp = await client.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids": check.asset_id, "vs_currencies": check.quote},
+            timeout=DEFAULT_TIMEOUT_S,
+        )
+        status_code = resp.status_code
+        resp.raise_for_status()
+        payload = resp.json()
+
+        price = payload.get(check.asset_id, {}).get(check.quote)
+
+        if price is None:
+            error = "Price not found in source response"
+        else:
+            meets_min = check.min_price is None or price >= check.min_price
+            meets_max = check.max_price is None or price <= check.max_price
+            ok = meets_min and meets_max
+
+    except Exception as e:
+        error = str(e)
+
+    latency_ms = int((time.time() - t0) * 1000)
+    transient = bool(error)
+
+    return {
+        "type": "price",
+        "source": check.source,
+        "asset_id": check.asset_id,
+        "quote": check.quote,
+        "min_price": check.min_price,
+        "max_price": check.max_price,
+        "status": status_code,
+        "latency_ms": latency_ms,
+        "ok": ok,
+        "transient": transient,
+        "error": error,
+        "price": price,
+    }
+
+
+async def run_tx_check(client: httpx.AsyncClient, check: VerifyTxCheck) -> Dict[str, Any]:
+    t0 = time.time()
+    ok = False
+    error = None
+    receipt = None
+    status_code = None
+
+    try:
+        resp = await client.post(
+            str(check.rpc_url),
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "eth_getTransactionReceipt",
+                "params": [check.tx_hash],
+            },
+            timeout=DEFAULT_TIMEOUT_S,
+        )
+        status_code = resp.status_code
+        resp.raise_for_status()
+        payload = resp.json()
+
+        if "error" in payload:
+            error = json.dumps(payload["error"])[:300]
+        else:
+            receipt = payload.get("result")
+
+            if receipt is None:
+                # Tx not indexed / not mined yet = transient
+                error = "Transaction receipt not found yet"
+            else:
+                tx_status = receipt.get("status")
+                if check.require_success:
+                    ok = tx_status == "0x1"
+                    if not ok:
+                        error = f"Transaction status was {tx_status}"
+                else:
+                    ok = True
+
+    except Exception as e:
+        error = str(e)
+
+    latency_ms = int((time.time() - t0) * 1000)
+    transient = bool(error)
+
+    return {
+        "type": "tx",
+        "rpc_url": str(check.rpc_url),
+        "tx_hash": check.tx_hash,
+        "require_success": check.require_success,
+        "status": status_code,
+        "latency_ms": latency_ms,
+        "ok": ok,
+        "transient": transient,
+        "error": error,
+        "receipt": receipt,
+    }
+
+
+async def run_check(client: httpx.AsyncClient, check: CheckType) -> Dict[str, Any]:
+    if isinstance(check, VerifyHTTPCheck):
+        return await run_http_check(client, check)
+    if isinstance(check, VerifyRPCCheck):
+        return await run_rpc_check(client, check)
+    if isinstance(check, VerifyPriceCheck):
+        return await run_price_check(client, check)
+    if isinstance(check, VerifyTxCheck):
+        return await run_tx_check(client, check)
+
+    return {
+        "type": "unknown",
+        "ok": False,
+        "transient": False,
+        "error": "Unsupported check type",
+    }
+
+
 # ----------------------
 # OpenRouter: decision compression
 # ----------------------
@@ -150,6 +372,7 @@ async def llm_decide_openrouter(payload: Dict[str, Any]) -> Dict[str, Any]:
         "Rules:\n"
         "- If any non-transient check failed AND partial is not allowed: verdict='block'\n"
         "- If failures look transient (timeouts/5xx/429/DNS), prefer verdict='wait'\n"
+        "- If all checks passed, prefer verdict='proceed'\n"
     )
 
     user_obj = {
@@ -214,7 +437,7 @@ async def process_decision(req: DecideRequest, max_checks_allowed: int) -> Decid
 
     async with httpx.AsyncClient(verify=certifi.where()) as client:
         for c in req.checks:
-            evidence.append(await run_http_check(client, c))
+            evidence.append(await run_check(client, c))
 
     any_failed = any(e.get("ok") is False for e in evidence)
     any_transient_fail = any((e.get("ok") is False) and (e.get("transient") is True) for e in evidence)
@@ -306,6 +529,5 @@ async def decide(req: DecideRequest, x_api_key: Optional[str] = Header(default=N
 
 @app.post("/v1/acp/decide", response_model=DecideResponse)
 async def acp_decide(req: DecideRequest):
-    # Public ACP-facing endpoint.
-    # Keep this lightweight and more restricted than the private endpoint.
+    # Public ACP-facing endpoint
     return await process_decision(req, ACP_MAX_CHECKS)
