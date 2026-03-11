@@ -11,14 +11,11 @@ from pydantic import BaseModel, Field, AnyHttpUrl
 
 APP_NAME = "Decision + Verification Agent"
 
-# Always load .env from the same folder as this file
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
 
-# Security
 API_KEY = os.getenv("API_KEY", "")
 
-# Runtime controls
 DEFAULT_TIMEOUT_S = float(os.getenv("HTTP_TIMEOUT_S", "12"))
 MAX_CHECKS = int(os.getenv("MAX_CHECKS", "10"))
 ACP_MAX_CHECKS = int(os.getenv("ACP_MAX_CHECKS", "3"))
@@ -65,8 +62,42 @@ class VerifyTxCheck(BaseModel):
     require_success: bool = True
 
 
+class VerifyDexPriceCheck(BaseModel):
+    type: Literal["dex_price"] = "dex_price"
+    chain: str
+    pair_address: str
+    min_price_usd: Optional[float] = None
+    max_price_usd: Optional[float] = None
+    min_liquidity_usd: Optional[float] = None
+    min_volume_h24_usd: Optional[float] = None
+
+
+class VerifyStablecoinPegCheck(BaseModel):
+    type: Literal["stablecoin_peg"] = "stablecoin_peg"
+    asset_id: str
+    quote: str = "usd"
+    min_price: float = 0.99
+    max_price: float = 1.01
+
+
+class VerifyBridgeStatusCheck(BaseModel):
+    type: Literal["bridge_status"] = "bridge_status"
+    status_url: AnyHttpUrl
+    expect_status: int = 200
+    must_contain: Optional[str] = None
+    headers: Dict[str, str] = Field(default_factory=dict)
+
+
 CheckType = Annotated[
-    Union[VerifyHTTPCheck, VerifyRPCCheck, VerifyPriceCheck, VerifyTxCheck],
+    Union[
+        VerifyHTTPCheck,
+        VerifyRPCCheck,
+        VerifyPriceCheck,
+        VerifyTxCheck,
+        VerifyDexPriceCheck,
+        VerifyStablecoinPegCheck,
+        VerifyBridgeStatusCheck,
+    ],
     Field(discriminator="type"),
 ]
 
@@ -100,12 +131,24 @@ def require_api_key(x_api_key: Optional[str]):
 
 
 # ----------------------
-# Verification helpers
+# Helpers
 # ----------------------
 def _is_hex_string(value: Any) -> bool:
     return isinstance(value, str) and value.startswith("0x")
 
 
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+# ----------------------
+# Verification checks
+# ----------------------
 async def run_http_check(client: httpx.AsyncClient, check: VerifyHTTPCheck) -> Dict[str, Any]:
     t0 = time.time()
     ok = False
@@ -229,9 +272,6 @@ async def run_price_check(client: httpx.AsyncClient, check: VerifyPriceCheck) ->
     status_code = None
 
     try:
-        if check.source != "coingecko":
-            raise ValueError(f"Unsupported price source: {check.source}")
-
         resp = await client.get(
             "https://api.coingecko.com/api/v3/simple/price",
             params={"ids": check.asset_id, "vs_currencies": check.quote},
@@ -300,7 +340,6 @@ async def run_tx_check(client: httpx.AsyncClient, check: VerifyTxCheck) -> Dict[
             receipt = payload.get("result")
 
             if receipt is None:
-                # Tx not indexed / not mined yet = transient
                 error = "Transaction receipt not found yet"
             else:
                 tx_status = receipt.get("status")
@@ -331,6 +370,165 @@ async def run_tx_check(client: httpx.AsyncClient, check: VerifyTxCheck) -> Dict[
     }
 
 
+async def run_dex_price_check(client: httpx.AsyncClient, check: VerifyDexPriceCheck) -> Dict[str, Any]:
+    t0 = time.time()
+    ok = False
+    error = None
+    status_code = None
+    pair = None
+    price_usd = None
+    liquidity_usd = None
+    volume_h24 = None
+
+    try:
+        resp = await client.get(
+            f"https://api.dexscreener.com/latest/dex/pairs/{check.chain}/{check.pair_address}",
+            timeout=DEFAULT_TIMEOUT_S,
+        )
+        status_code = resp.status_code
+        resp.raise_for_status()
+        payload = resp.json()
+
+        pairs = payload.get("pairs") or []
+        if not pairs:
+            error = "Pair not found"
+        else:
+            pair = pairs[0]
+            price_usd = _to_float(pair.get("priceUsd"))
+            liquidity_usd = _to_float((pair.get("liquidity") or {}).get("usd"))
+            volume_h24 = _to_float((pair.get("volume") or {}).get("h24"))
+
+            conditions = [
+                price_usd is not None,
+                check.min_price_usd is None or (price_usd is not None and price_usd >= check.min_price_usd),
+                check.max_price_usd is None or (price_usd is not None and price_usd <= check.max_price_usd),
+                check.min_liquidity_usd is None or (liquidity_usd is not None and liquidity_usd >= check.min_liquidity_usd),
+                check.min_volume_h24_usd is None or (volume_h24 is not None and volume_h24 >= check.min_volume_h24_usd),
+            ]
+            ok = all(conditions)
+
+    except Exception as e:
+        error = str(e)
+
+    latency_ms = int((time.time() - t0) * 1000)
+    transient = bool(error)
+
+    return {
+        "type": "dex_price",
+        "chain": check.chain,
+        "pair_address": check.pair_address,
+        "min_price_usd": check.min_price_usd,
+        "max_price_usd": check.max_price_usd,
+        "min_liquidity_usd": check.min_liquidity_usd,
+        "min_volume_h24_usd": check.min_volume_h24_usd,
+        "status": status_code,
+        "latency_ms": latency_ms,
+        "ok": ok,
+        "transient": transient,
+        "error": error,
+        "price_usd": price_usd,
+        "liquidity_usd": liquidity_usd,
+        "volume_h24_usd": volume_h24,
+        "pair_url": pair.get("url") if pair else None,
+        "dex_id": pair.get("dexId") if pair else None,
+    }
+
+
+async def run_stablecoin_peg_check(client: httpx.AsyncClient, check: VerifyStablecoinPegCheck) -> Dict[str, Any]:
+    t0 = time.time()
+    ok = False
+    error = None
+    price = None
+    status_code = None
+
+    try:
+        resp = await client.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids": check.asset_id, "vs_currencies": check.quote},
+            timeout=DEFAULT_TIMEOUT_S,
+        )
+        status_code = resp.status_code
+        resp.raise_for_status()
+        payload = resp.json()
+
+        price = payload.get(check.asset_id, {}).get(check.quote)
+
+        if price is None:
+            error = "Stablecoin price not found"
+        else:
+            ok = check.min_price <= price <= check.max_price
+
+    except Exception as e:
+        error = str(e)
+
+    latency_ms = int((time.time() - t0) * 1000)
+    transient = bool(error)
+
+    return {
+        "type": "stablecoin_peg",
+        "asset_id": check.asset_id,
+        "quote": check.quote,
+        "min_price": check.min_price,
+        "max_price": check.max_price,
+        "status": status_code,
+        "latency_ms": latency_ms,
+        "ok": ok,
+        "transient": transient,
+        "error": error,
+        "price": price,
+    }
+
+
+async def run_bridge_status_check(client: httpx.AsyncClient, check: VerifyBridgeStatusCheck) -> Dict[str, Any]:
+    t0 = time.time()
+    ok = False
+    status = None
+    error = None
+    body_snippet = None
+
+    try:
+        resp = await client.get(
+            str(check.status_url),
+            headers=check.headers,
+            timeout=DEFAULT_TIMEOUT_S,
+            follow_redirects=True,
+        )
+        status = resp.status_code
+        text = resp.text or ""
+        body_snippet = text[:300] if text else None
+
+        if check.must_contain:
+            ok = (status == check.expect_status) and (check.must_contain.lower() in text.lower())
+        else:
+            ok = status == check.expect_status
+
+    except Exception as e:
+        error = str(e)
+
+    latency_ms = int((time.time() - t0) * 1000)
+
+    transient = False
+    if error:
+        transient = True
+    if status and 500 <= status <= 599:
+        transient = True
+    if status == 429:
+        transient = True
+
+    return {
+        "type": "bridge_status",
+        "status_url": str(check.status_url),
+        "expect_status": check.expect_status,
+        "must_contain": check.must_contain,
+        "status": status,
+        "latency_ms": latency_ms,
+        "ok": ok,
+        "transient": transient,
+        "error": error,
+        "body_snippet": body_snippet,
+    }
+
+
 async def run_check(client: httpx.AsyncClient, check: CheckType) -> Dict[str, Any]:
     if isinstance(check, VerifyHTTPCheck):
         return await run_http_check(client, check)
@@ -340,6 +538,12 @@ async def run_check(client: httpx.AsyncClient, check: CheckType) -> Dict[str, An
         return await run_price_check(client, check)
     if isinstance(check, VerifyTxCheck):
         return await run_tx_check(client, check)
+    if isinstance(check, VerifyDexPriceCheck):
+        return await run_dex_price_check(client, check)
+    if isinstance(check, VerifyStablecoinPegCheck):
+        return await run_stablecoin_peg_check(client, check)
+    if isinstance(check, VerifyBridgeStatusCheck):
+        return await run_bridge_status_check(client, check)
 
     return {
         "type": "unknown",
@@ -521,17 +725,6 @@ async def health():
     return {"ok": True, "name": APP_NAME}
 
 
-@app.post("/v1/decide", response_model=DecideResponse)
-async def decide(req: DecideRequest, x_api_key: Optional[str] = Header(default=None)):
-    require_api_key(x_api_key)
-    return await process_decision(req, MAX_CHECKS)
-
-
-@app.post("/v1/acp/decide", response_model=DecideResponse)
-async def acp_decide(req: DecideRequest):
-    # Public ACP-facing endpoint
-    return await process_decision(req, ACP_MAX_CHECKS)
-
 @app.get("/v1/capabilities")
 async def capabilities():
     return {
@@ -541,29 +734,28 @@ async def capabilities():
             "http",
             "rpc",
             "price",
-            "tx"
+            "tx",
+            "dex_price",
+            "stablecoin_peg",
+            "bridge_status",
         ],
-        "max_checks_per_request": ACP_MAX_CHECKS,
-        "decision_types": [
-            "proceed",
-            "wait",
-            "block"
-        ],
-        "example_request": {
-            "goal": "Verify Base RPC is alive",
-            "checks": [
-                {
-                    "type": "rpc",
-                    "rpc_url": "https://mainnet.base.org",
-                    "method_name": "eth_blockNumber",
-                    "params": [],
-                    "expect_hex_result": True
-                }
-            ],
-            "allow_decide_on_partial": True
-        },
+        "max_checks_private": MAX_CHECKS,
+        "max_checks_acp": ACP_MAX_CHECKS,
+        "decision_types": ["proceed", "wait", "block"],
         "endpoints": {
-            "decision": "/v1/acp/decide",
-            "health": "/health"
-        }
+            "private_decision": "/v1/decide",
+            "acp_decision": "/v1/acp/decide",
+            "health": "/health",
+        },
     }
+
+
+@app.post("/v1/decide", response_model=DecideResponse)
+async def decide(req: DecideRequest, x_api_key: Optional[str] = Header(default=None)):
+    require_api_key(x_api_key)
+    return await process_decision(req, MAX_CHECKS)
+
+
+@app.post("/v1/acp/decide", response_model=DecideResponse)
+async def acp_decide(req: DecideRequest):
+    return await process_decision(req, ACP_MAX_CHECKS)
