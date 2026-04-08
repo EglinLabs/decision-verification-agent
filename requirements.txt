@@ -3,3 +3,5 @@ uvicorn[standard]==0.30.6
 httpx==0.27.2
 pydantic==2.8.2
 python-dotenv==1.0.1
+certifi
+email-validator>=2.0.0
