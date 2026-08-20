@@ -2,7 +2,7 @@
 
 > Pre-execution safety checks for AI DeFi agents. Binary verdict in under 300ms.
 
-[![Live](https://camo.githubusercontent.com/653a2d81930df2a18483cc2ac973f4c6004d152778456e3a17b8d4051ea1efea/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f7374617475732d6c6976652d627269676874677265656e3f7374796c653d666c61742d737175617265)](https://api.verifyproceed.com/health) [![Base Mainnet](https://camo.githubusercontent.com/10100a553b5f5e74aebaf8a1c9b562a06f9fc9dd980cac084cfa63cbc54898c4/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f636861696e2d426173652532304d61696e6e65742d3030353266663f7374796c653d666c61742d737175617265)](https://base.org) [![Solana](https://camo.githubusercontent.com/391e87158f8e26ce4e646a4ea3b5d456947474ef6610033c4487209b08b4d9a3/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f636861696e2d536f6c616e61253230636f6d696e672d3939343546463f7374796c653d666c61742d737175617265)](https://verifyproceed.com) [![x402](https://camo.githubusercontent.com/8fe78a7af8053931dc3e2798b9158baa085c75e3c8bc9e4df0945866330c5c00/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f7061796d656e74732d78343032253230555344432d3030633839363f7374796c653d666c61742d737175617265)](https://x402.org) [![Python](https://camo.githubusercontent.com/3fe3e79b0f8fceaa55a511c82c259fb2e61db1733967582543ea1a15c10752ff/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f707974686f6e2d332e31312b2d626c75653f7374796c653d666c61742d737175617265)](https://python.org) [![ACP](https://camo.githubusercontent.com/1be88869d8e354d5cc6257953b7dd8f4ad82a6c0fc90ebda78aaaf194a59a2e8/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f436f696e626173652d414350253230636f6d70617469626c652d3030353266663f7374796c653d666c61742d737175617265)](https://www.coinbase.com/developer-platform/products/agentkit)
+[![Live](https://img.shields.io/badge/status-live-brightgreen?style=flat-square)](https://decision-verification-agent.onrender.com/health) [![Base Mainnet](https://img.shields.io/badge/chain-Base%20Mainnet-0052ff?style=flat-square)](https://base.org) [![Solana](https://img.shields.io/badge/chain-Solana%20coming-9945FF?style=flat-square)](https://verifyproceed.com) [![x402](https://img.shields.io/badge/payments-x402%20USDC-00c896?style=flat-square)](https://x402.org) [![Python](https://img.shields.io/badge/python-3.11+-blue?style=flat-square)](https://python.org) [![ACP](https://img.shields.io/badge/Coinbase-ACP%20compatible-0052ff?style=flat-square)](https://www.coinbase.com/developer-platform/products/agentkit)
 
 ---
 
@@ -23,7 +23,7 @@ An RPC returns corrupted data. The agent acts on it.
 One API call before any on-chain action. Binary answer. Under 300ms.
 
 ```
-curl -X POST https://api.verifyproceed.com/v1/acp/guard \
+curl -X POST https://decision-verification-agent.onrender.com/v1/acp/guard \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"action":"bridge","chain":"base","amount_usd":50000}'
@@ -48,6 +48,21 @@ If `verdict` is `block` — the agent stops. No human needed. No post-mortem nee
 
 ---
 
+## Live on Virtuals ACP as a neutral Evaluator
+
+VerifyProceed also runs as a **third-party Evaluator agent** on Virtuals Protocol's Agent Commerce Protocol — the neutral referee that approves or rejects other agents' escrowed job deliverables before payment releases, using this same verification engine.
+
+Both directions confirmed on Base mainnet, with the client, provider, and evaluator as three separate wallets throughout — genuine third-party evaluation, not self-approval:
+
+- **Reject / refund** — verified across multiple jobs, escrow correctly returned to the client each time.
+- **Complete / release** — verified with a real requirement, a real deliverable, a genuine passing verdict, and a confirmed single on-chain payout to the provider.
+
+Runs on `@virtuals-protocol/acp-node-v2` with a non-custodial Privy-managed signer — built to run unattended on server infrastructure, not just as a local test harness.
+
+Verify directly: [VerifyProceed's agent wallet on BaseScan](https://basescan.org/address/0x5a37a8ae00c884a864253dde3fe11f68364fcdf1)
+
+---
+
 ## Quick start
 
 ### 1. Get a free API key
@@ -62,7 +77,7 @@ https://verifyproceed.com/get-api-key
 
 ```
 # Returns HTTP 402 (expected) — proves the API is live
-curl -X POST https://api.verifyproceed.com/v1/acp/guard \
+curl -X POST https://decision-verification-agent.onrender.com/v1/acp/guard \
   -H "Content-Type: application/json" \
   -d '{"action":"generic","chain":"base"}'
 ```
@@ -70,7 +85,7 @@ curl -X POST https://api.verifyproceed.com/v1/acp/guard \
 ### 3. With your key
 
 ```
-curl -X POST https://api.verifyproceed.com/v1/acp/guard \
+curl -X POST https://decision-verification-agent.onrender.com/v1/acp/guard \
   -H "Authorization: Bearer vp_your_key_here" \
   -H "Content-Type: application/json" \
   -d '{"action":"generic","chain":"base"}'
@@ -82,12 +97,12 @@ curl -X POST https://api.verifyproceed.com/v1/acp/guard \
 
 ### Python
 
-```
+```python
 # pip install requests
 import requests
 
 response = requests.post(
-    "https://api.verifyproceed.com/v1/acp/guard",
+    "https://decision-verification-agent.onrender.com/v1/acp/guard",
     headers={
         "Authorization": "Bearer vp_your_key_here",
         "Content-Type": "application/json",
@@ -109,13 +124,13 @@ else:
 
 ### TypeScript
 
-```
+```typescript
 const response = await fetch(
-  "https://api.verifyproceed.com/v1/acp/guard",
+  "https://decision-verification-agent.onrender.com/v1/acp/guard",
   {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${process.env.VP_API_KEY}`,
+      "Authorization": `Bearer ${process.env.VERIFYPROCEED_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -138,7 +153,7 @@ if (verdict !== "proceed") {
 
 ### ElizaOS plugin
 
-```
+```typescript
 import type { Action, IAgentRuntime, Memory } from "@elizaos/core";
 
 export const guardAction: Action = {
@@ -146,11 +161,11 @@ export const guardAction: Action = {
   description: "Run VerifyProceed pre-execution safety check before any on-chain action",
   async handler(runtime: IAgentRuntime, message: Memory) {
     const res = await fetch(
-      "https://api.verifyproceed.com/v1/acp/guard",
+      "https://decision-verification-agent.onrender.com/v1/acp/guard",
       {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${process.env.VP_API_KEY}`,
+          "Authorization": `Bearer ${process.env.VERIFYPROCEED_API_KEY}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -174,7 +189,7 @@ export const guardAction: Action = {
 
 ### LangChain tool
 
-```
+```python
 from langchain.tools import tool
 import requests
 
@@ -182,8 +197,8 @@ import requests
 def guard_check(action: str, chain: str = "base", amount_usd: float = 0) -> str:
     """Run a pre-execution safety check before any DeFi action."""
     response = requests.post(
-        "https://api.verifyproceed.com/v1/acp/guard",
-        headers={"Authorization": f"Bearer {VP_API_KEY}"},
+        "https://decision-verification-agent.onrender.com/v1/acp/guard",
+        headers={"Authorization": f"Bearer {VERIFYPROCEED_API_KEY}"},
         json={"action": action, "chain": chain, "amount_usd": amount_usd},
     )
     result = response.json()
@@ -194,8 +209,7 @@ def guard_check(action: str, chain: str = "base", amount_usd: float = 0) -> str:
 
 ## Endpoints
 
-**Base URL:** `https://api.verifyproceed.com`
-**Private URL:** `https://dupfyqqbvkrmzjexwukd.supabase.co`
+**Base URL:** `https://decision-verification-agent.onrender.com`
 
 | Method | Path                           | Auth           | Cost      | Description                |
 | ------ | ------------------------------ | -------------- | --------- | -------------------------- |
@@ -211,9 +225,9 @@ def guard_check(action: str, chain: str = "base", amount_usd: float = 0) -> str:
 
 ## Guard request schema
 
-```
+```json
 {
-  "action":               "swap | transfer | bridge | yield_deposit | generic",
+  "action":               "swap | transfer | bridge | yield_deposit | approve | mint | stake | add_liquidity | contract_call | generic",
   "chain":                "base | ethereum | arbitrum | optimism | polygon",
   "pair_address":         "0x... (optional — for DEX checks)",
   "stablecoin_asset_id":  "usd-coin (optional — for depeg checks)",
@@ -235,6 +249,8 @@ def guard_check(action: str, chain: str = "base", amount_usd: float = 0) -> str:
 | Bridge exploit monitor | Live exploits and active incidents         |
 | DEX price integrity    | Manipulation signals and liquidity drain   |
 | Rug pull risk          | Pair age, FDV ratio, liquidity depth       |
+| Approval risk          | Unlimited/unusual token approvals          |
+| Contract verification  | Unverified or suspicious contract bytecode |
 
 All checks run in parallel. Total latency: **<300ms p99**.
 
@@ -242,7 +258,7 @@ All checks run in parallel. Total latency: **<300ms p99**.
 
 ## Verdict schema
 
-```
+```json
 {
   "verdict":      "proceed | wait | block",
   "confidence":   0.95,
@@ -292,6 +308,7 @@ POST /v1/acp/guard  (no key)
 
 | Framework        | Integration                          |
 | ---------------- | ------------------------------------ |
+| Virtuals ACP     | Native — Evaluator agent + `/v1/acp/*` endpoints |
 | Coinbase ACP     | Native — ACP endpoints (`/v1/acp/*`) |
 | ElizaOS / ai16z  | Plugin (see example above)           |
 | LangChain        | Tool (see example above)             |
@@ -325,7 +342,7 @@ uvicorn app:app --reload --port 8000
 ### Environment variables
 
 | Variable               | Required    | Description                        |
-| ---------------------- | ----------- | ----------------------------------- |
+| ----------------------- | ----------- | ----------------------------------- |
 | `OPENROUTER_API_KEY`   | Yes         | LLM verdict generation             |
 | `SUPABASE_URL`         | Yes         | API key validation                 |
 | `SUPABASE_SERVICE_KEY` | Yes         | Supabase service role key          |
@@ -347,19 +364,21 @@ docker run -p 8000:8000 --env-file .env verifyproceed-guard
 
 | Resource               | Link                                                                                    |
 | ---------------------- | --------------------------------------------------------------------------------------- |
+| Website                | [verifyproceed.com](https://verifyproceed.com)                                          |
 | Full documentation     | [verifyproceed.com/docs](https://verifyproceed.com/docs)                                |
 | Interactive playground | [verifyproceed.com/playground](https://verifyproceed.com/playground)                    |
-| OpenAPI spec           | [verifyproceed.com/openapi.json](https://verifyproceed.com/openapi.json)                |
-| Postman collection     | [verifyproceed.com/postman_collection.json](https://verifyproceed.com/postman_collection.json) |
+| Marketplace / ACP kit  | [verifyproceed.com/marketplace-kit](https://verifyproceed.com/marketplace-kit)          |
 | Get API key            | [verifyproceed.com/get-api-key](https://verifyproceed.com/get-api-key)                  |
+
+*(Confirm exact paths match your live site's routing before publishing — inferred from the site's page structure, not independently verified.)*
 
 ---
 
 ## Support
 
-- **Email:** <api@verifyproceed.com>
 - **Website:** [verifyproceed.com](https://verifyproceed.com)
-- **X / Twitter:** [@proceedapi](https://x.com/proceedapi)
+- **X / Twitter:** *(add current handle)*
+- **Email:** *(add current support email)*
 
 ---
 
