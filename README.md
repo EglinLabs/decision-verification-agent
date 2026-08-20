@@ -359,7 +359,7 @@ docker run -p 8000:8000 --env-file .env verifyproceed-guard
 
 - **Email:** <api@verifyproceed.com>
 - **Website:** [verifyproceed.com](https://verifyproceed.com)
-- **X / Twitter:** [@verifyproceed](https://x.com/verifyproceed)
+- **X / Twitter:** [@proceedapi](https://x.com/proceedapi)
 
 ---
 
